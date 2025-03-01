@@ -24,16 +24,12 @@ MSDN Magazine articles
 */
 
 #include <windows.h>
-
-#include <imagehlp.h>
-
 #include <winnt.h>
-
+#include <imagehlp.h>
+#pragma comment(lib, "imagehlp.lib")
+#include "libntldd.h"
 #include <string.h>
 #include <stdio.h>
-#include <stdint.h>
-
-#include "libntldd.h"
 
 typedef struct _soff_entry soff_entry;
 
@@ -41,7 +37,7 @@ struct _soff_entry
 {
   DWORD start;
   DWORD end;
-  void *off;
+  char *off;
 };
 
 void *MapPointer (soff_entry *soffs, int soffs_len, DWORD in_ptr, int *section)
@@ -90,9 +86,11 @@ void ResizeArray (void **data, uint64_t *data_size, size_t sizeof_data)
   uint64_t new_size = (*data_size) > 0 ? (*data_size) * 2 : 64;
   void *new_data;
   new_data = realloc (*data, new_size * sizeof_data);
-  memset (((unsigned char *) new_data) + (*data_size * sizeof_data), 0, (new_size - (*data_size)) * sizeof_data);
-  *data = new_data;
-  *data_size = new_size;
+  if (new_data) {
+      memset(((unsigned char *)new_data) + (*data_size * sizeof_data), 0, (new_size - (*data_size)) * sizeof_data);
+      *data = new_data;
+      *data_size = new_size;
+  }
 }
 
 #define ResizeDepList(ptr_deptree, ptr_deptree_size) ResizeArray ((void **) ptr_deptree, ptr_deptree_size, sizeof (struct DepTreeElement *))
@@ -123,14 +121,15 @@ int FindDep (struct DepTreeElement *root, char *name, struct DepTreeElement **re
 {
   int ret = -1;
   uint64_t i;
+  if (!root)
+    return -1;
   if (root->flags & DEPTREE_VISITED)
-  {
     return -2;
-  }
   root->flags |= DEPTREE_VISITED;
   for (i = 0; i < root->childs_len; i++)
   {
-    if (stricmp (root->childs[i]->module, name) == 0)
+    if (root->childs[i] && root->childs[i]->module &&
+      _stricmp (root->childs[i]->module, name) == 0)
     {
       if (result != NULL)
         *result = root->childs[i];
@@ -156,14 +155,16 @@ struct DepTreeElement *ProcessDep (BuildTreeConfig* cfg, soff_entry *soffs, int 
   char *dllname = (char *) MapPointer (soffs, soffs_len, name, NULL);
   if (dllname == NULL)
     return NULL;
-  if (strlen (dllname) > 10 && strnicmp ("api-ms-win", dllname, 10) == 0)
-  {
-    /* TODO: find a better way to identify api stubs. Versioninfo, maybe? */
+  /* TODO: find a better way to identify api stubs. Versioninfo, maybe? */
+  if (strlen (dllname) > 6 && strnicmp ("ext-ms", dllname, 6) == 0)
     return NULL;
-  }
+  if (strlen (dllname) > 10 && strnicmp ("api-ms-win", dllname, 10) == 0)
+    return NULL;
+  if (!cfg || !cfg->stack || !cfg->stack_len)
+    return NULL;
   for (i = (int64_t)*cfg->stack_len - 1; i >= 0; i--)
   {
-    if ((*cfg->stack)[i] && stricmp ((*cfg->stack)[i], dllname) == 0)
+    if ((*cfg->stack)[i] && _stricmp ((*cfg->stack)[i], dllname) == 0)
       return NULL;
     if (i == 0)
       break;
@@ -172,11 +173,13 @@ struct DepTreeElement *ProcessDep (BuildTreeConfig* cfg, soff_entry *soffs, int 
   if (found < 0)
   {
     child = (struct DepTreeElement *) malloc (sizeof (struct DepTreeElement));
-    memset (child, 0, sizeof (struct DepTreeElement));
-    if (deep == 0)
-    {
-      child->module = strdup (dllname);
-      AddDep (self, child);
+    if (child) {
+      memset (child, 0, sizeof (struct DepTreeElement));
+      if (deep == 0)
+      {
+        child->module = _strdup (dllname);
+        AddDep (self, child);
+      }
     }
   }
   if (deep == 1)
@@ -197,31 +200,45 @@ struct ExportTableItem *FindExportForward (struct DepTreeElement *self, char *dl
 int ClearDepStatus (struct DepTreeElement *self, uint64_t flags)
 {
   uint64_t i;
+  if (!self) return -1;
   for (i = 0; i < self->childs_len; i++)
-    ClearDepStatus (self->childs[i], flags);
+    if (self->childs[i])
+      ClearDepStatus(self->childs[i], flags);
   self->flags &= ~flags;
   return 0;
 }
 
 void PushStack (char ***stack, uint64_t *stack_len, uint64_t *stack_size, char *name)
 {
+  if (!stack || !stack_len || !stack_size)
+    return;
   if (*stack_len >= *stack_size)
   {
-    ResizeStack (stack, stack_size);
+    ResizeStack(stack, stack_size);
   }
-  (*stack)[*stack_len] = strdup (name);
-  (*stack_len) += 1;
+  if (*stack && *stack_size > *stack_len && name) {
+    (*stack)[*stack_len] = _strdup(name);
+    (*stack_len) += 1;
+  }
 }
 
 void PopStack (char ***stack, uint64_t *stack_len, uint64_t *stack_size, char *name)
 {
-  (*stack)[*stack_len] = NULL;
+  if (!stack || !stack_len || !*stack || *stack_len == 0)
+    return;
+  free((*stack)[*stack_len-1]);
+  (*stack)[*stack_len-1] = NULL;
   (*stack_len) -= 1;
+  if (stack_size && *stack_size > *stack_len * 2)
+    ResizeStack(stack, stack_size);
 }
 
 static uint64_t thunk_data_u1_function (void *thunk_array, DWORD index, BuildTreeConfig *cfg)
 {
-  if (cfg->machineType == IMAGE_FILE_MACHINE_I386)
+  if (!thunk_array || !cfg)
+     return 0;
+
+  if (!cfg->isPE32plus)
     return ((IMAGE_THUNK_DATA32 *) thunk_array)[index].u1.Function;
   else
     return ((IMAGE_THUNK_DATA64 *) thunk_array)[index].u1.Function;
@@ -229,7 +246,10 @@ static uint64_t thunk_data_u1_function (void *thunk_array, DWORD index, BuildTre
 
 static void *opt_header_get_dd_entry (void *opt_header, DWORD entry_type, BuildTreeConfig *cfg)
 {
-  if (cfg->machineType == IMAGE_FILE_MACHINE_I386)
+  if (!opt_header || !cfg || entry_type >= IMAGE_NUMBEROF_DIRECTORY_ENTRIES)
+    return NULL;
+
+  if (!cfg->isPE32plus)
     return &(((PIMAGE_OPTIONAL_HEADER32) opt_header)->DataDirectory[entry_type]);
   else
     return &(((PIMAGE_OPTIONAL_HEADER64) opt_header)->DataDirectory[entry_type]);
@@ -242,21 +262,26 @@ static void BuildDepTree32or64 (LOADED_IMAGE *img, BuildTreeConfig* cfg, struct 
   IMAGE_EXPORT_DIRECTORY *ied;
   IMAGE_DELAYLOAD_DESCRIPTOR *idd;
   void *ith, *oith;
-  void *opt_header = &img->FileHeader->OptionalHeader;
+  void *opt_header;
   DWORD i, j;
 
-  idata = opt_header_get_dd_entry (opt_header, IMAGE_DIRECTORY_ENTRY_EXPORT, cfg);
-  if (idata->Size > 0 && idata->VirtualAddress != 0)
+  if (!img || !cfg || !root || !self || !soffs || soffs_len <= 0) return;
+
+  opt_header = &img->FileHeader->OptionalHeader;
+  if (!opt_header) return;
+
+  idata = (IMAGE_DATA_DIRECTORY*)opt_header_get_dd_entry (opt_header, IMAGE_DIRECTORY_ENTRY_EXPORT, cfg);
+  if (idata && idata->Size > 0 && idata->VirtualAddress != 0)
   {
     int export_section = -2;
     ied = (IMAGE_EXPORT_DIRECTORY *) MapPointer (soffs, soffs_len, idata->VirtualAddress, &export_section);
     if (ied && ied->Name != 0)
     {
       char *export_module = MapPointer (soffs, soffs_len, ied->Name, NULL);
-      if (export_module != NULL)
+      if (export_module)
       {
         if (self->export_module == NULL)
-          self->export_module = strdup (export_module);
+          self->export_module = _strdup (export_module);
       }
     }
     if (ied && ied->NumberOfFunctions > 0)
@@ -266,42 +291,47 @@ static void BuildDepTree32or64 (LOADED_IMAGE *img, BuildTreeConfig* cfg, struct 
       int section = -1;
       self->exports_len = ied->NumberOfFunctions;
       self->exports = (struct ExportTableItem *) malloc (sizeof (struct ExportTableItem) * self->exports_len);
-      memset (self->exports, 0, sizeof (struct ExportTableItem) * self->exports_len);
-      addrs = (DWORD *) MapPointer (soffs, soffs_len, ied->AddressOfFunctions, NULL);
-      ords = (WORD *) MapPointer (soffs, soffs_len, ied->AddressOfNameOrdinals, NULL);
-      names = (DWORD *) MapPointer (soffs, soffs_len, ied->AddressOfNames, NULL);
-      for (i = 0; i < ied->NumberOfNames; i++)
+      if (self->exports)
       {
-        self->exports[ords[i]].ordinal = ords[i] + ied->Base;
-        if (names[i] != 0)
+        memset (self->exports, 0, sizeof (struct ExportTableItem) * self->exports_len);
+        addrs = (DWORD *) MapPointer (soffs, soffs_len, ied->AddressOfFunctions, NULL);
+        ords = (WORD *) MapPointer (soffs, soffs_len, ied->AddressOfNameOrdinals, NULL);
+        names = (DWORD *) MapPointer (soffs, soffs_len, ied->AddressOfNames, NULL);
+        for (i = 0; ords && i < ied->NumberOfNames && i < self->exports_len; i++)
         {
-          char *s_name = (char *) MapPointer (soffs, soffs_len, names[i], NULL);
-          if (s_name != NULL)
-            self->exports[ords[i]].name = strdup (s_name);
-        }
-      }
-      for (i = 0; i < ied->NumberOfFunctions; i++)
-      {
-        if (addrs[i] != 0)
-        {
-          int section_index = FindSectionByRawData (img, addrs[i]);
-          if ((idata->VirtualAddress <= addrs[i]) && (idata->VirtualAddress + idata->Size > addrs[i]))
-          {
-            self->exports[i].address = NULL;
-            self->exports[i].forward_str = strdup ((char *) MapPointer (soffs, soffs_len, addrs[i], NULL));
+          if (ords[i] < self->exports_len) {
+            self->exports[ords[i]].ordinal = (WORD)(ords[i] + ied->Base);
+            if (names && names[i] != 0)
+            {
+              char *s_name = MapPointer (soffs, soffs_len, names[i], NULL);
+              if (s_name)
+                self->exports[ords[i]].name = _strdup(s_name);
+             }
           }
-          else
-            self->exports[i].address = MapPointer (soffs, soffs_len, addrs[i], &section);
-          self->exports[i].ordinal = i + ied->Base;
-          self->exports[i].section_index = section_index;
-          self->exports[i].address_offset = addrs[i];
+        }
+        for (i = 0; addrs && i < ied->NumberOfFunctions && i < self->exports_len; i++)
+        {
+          if (addrs[i] != 0)
+          {
+            int section_index = FindSectionByRawData (img, addrs[i]);
+            if ((idata->VirtualAddress <= addrs[i]) && (idata->VirtualAddress + idata->Size > addrs[i]))
+            {
+              char *forward_str = MapPointer (soffs, soffs_len, addrs[i], NULL);
+              self->exports[i].address = NULL;
+              self->exports[i].forward_str = _strdup(forward_str);
+            }
+            else
+              self->exports[i].address = MapPointer (soffs, soffs_len, addrs[i], &section);
+              self->exports[i].ordinal = (WORD)(i + ied->Base);
+            self->exports[i].section_index = section_index;
+            self->exports[i].address_offset = addrs[i];
+          }
         }
       }
     }
   }
-
-  idata = opt_header_get_dd_entry (opt_header, IMAGE_DIRECTORY_ENTRY_IMPORT, cfg);
-  if (idata->Size > 0 && idata->VirtualAddress != 0)
+  idata = (IMAGE_DATA_DIRECTORY*)opt_header_get_dd_entry (opt_header, IMAGE_DIRECTORY_ENTRY_IMPORT, cfg);
+  if (idata && idata->Size > 0 && idata->VirtualAddress != 0)
   {
     iid = (IMAGE_IMPORT_DESCRIPTOR *) MapPointer (soffs, soffs_len,
         idata->VirtualAddress, NULL);
@@ -316,9 +346,11 @@ static void BuildDepTree32or64 (LOADED_IMAGE *img, BuildTreeConfig* cfg, struct 
           continue;
         ith = (void *) MapPointer (soffs, soffs_len, iid[i].FirstThunk, NULL);
         oith = (void *) MapPointer (soffs, soffs_len, iid[i].OriginalFirstThunk, NULL);
+        if (!ith) continue;
         for (j = 0; (impaddress = thunk_data_u1_function (ith, j, cfg)) != 0; j++)
         {
           struct ImportTableItem *imp = AddImport (self);
+          if (!imp) continue;
           imp->dll = dll;
           imp->ordinal = -1;
           if (oith)
@@ -329,20 +361,23 @@ static void BuildDepTree32or64 (LOADED_IMAGE *img, BuildTreeConfig* cfg, struct 
           }
           if (oith && imp->orig_address & (1 << (sizeof (DWORD) * 8 - 1)))
           {
-            imp->ordinal = imp->orig_address & ~(1 << (sizeof (DWORD) * 8 - 1));
+            imp->ordinal = (int)(imp->orig_address & ~(1 << (sizeof (DWORD) * 8 - 1)));
           }
           else if (oith)
           {
             IMAGE_IMPORT_BY_NAME *byname = (IMAGE_IMPORT_BY_NAME *) MapPointer (soffs, soffs_len, imp->orig_address, NULL);
-            if (byname != NULL)
-              imp->name = strdup ((char *) byname->Name);
+            if (byname) {
+              char *name_ptr = byname->Name;
+              if (name_ptr)
+                imp->name = _strdup(name_ptr);
+            }
           }
         }
       }
   }
 
-  idata = opt_header_get_dd_entry (opt_header, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT, cfg);
-  if (idata->Size > 0 && idata->VirtualAddress != 0)
+  idata = (IMAGE_DATA_DIRECTORY*)opt_header_get_dd_entry(opt_header, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT, cfg);
+  if (idata && idata->Size > 0 && idata->VirtualAddress != 0)
   {
     idd = (IMAGE_DELAYLOAD_DESCRIPTOR *) MapPointer (soffs, soffs_len, idata->VirtualAddress, NULL);
     if (idd)
@@ -354,8 +389,7 @@ static void BuildDepTree32or64 (LOADED_IMAGE *img, BuildTreeConfig* cfg, struct 
         struct DepTreeElement *dll;
         uint64_t impaddress;
         dll = ProcessDep (cfg, soffs, soffs_len, idd[i].DllNameRVA, root, self, 0);
-        if (dll == NULL)
-          continue;
+        if (dll == NULL) continue;
         if (idd[i].Attributes.AllAttributes & 0x00000001)
         {
           ith = (void *) MapPointer (soffs, soffs_len, idd[i].ImportAddressTableRVA, NULL);
@@ -363,12 +397,14 @@ static void BuildDepTree32or64 (LOADED_IMAGE *img, BuildTreeConfig* cfg, struct 
         }
         else
         {
-          ith = (void *) idd[i].ImportAddressTableRVA;
-          oith = (void *) idd[i].ImportNameTableRVA;
+          ith = (void *)(uintptr_t)(idd[i].ImportAddressTableRVA);
+          oith = (void *)(uintptr_t)(idd[i].ImportNameTableRVA);
         }
+        if (!ith) continue;
         for (j = 0; (impaddress = thunk_data_u1_function (ith, j, cfg)) != 0; j++)
         {
           struct ImportTableItem *imp = AddImport (self);
+          if (!imp) continue;
           imp->dll = dll;
           imp->ordinal = -1;
           if (oith)
@@ -379,31 +415,33 @@ static void BuildDepTree32or64 (LOADED_IMAGE *img, BuildTreeConfig* cfg, struct 
           }
           if (oith && imp->orig_address & (1 << (sizeof (DWORD) * 8 - 1)))
           {
-            imp->ordinal = imp->orig_address & ~(1 << (sizeof (DWORD) * 8 - 1));
+            imp->ordinal = (int)(imp->orig_address & ~(1 << (sizeof (DWORD) * 8 - 1)));
           }
           else if (oith)
           {
             IMAGE_IMPORT_BY_NAME *byname = (IMAGE_IMPORT_BY_NAME *) MapPointer (soffs, soffs_len, imp->orig_address, NULL);
-            if (byname != NULL)
-              imp->name = strdup ((char *) byname->Name);
+            if (byname) {
+              char *name_ptr = byname->Name;
+              if (name_ptr)
+                imp->name = _strdup (name_ptr);
+            }
           }
         }
       }
   }
 
-  idata = opt_header_get_dd_entry (opt_header, IMAGE_DIRECTORY_ENTRY_IMPORT, cfg);
-  if (idata->Size > 0 && idata->VirtualAddress != 0)
+  idata = (IMAGE_DATA_DIRECTORY*)opt_header_get_dd_entry(opt_header, IMAGE_DIRECTORY_ENTRY_IMPORT, cfg);
+  if (idata && idata->Size > 0 && idata->VirtualAddress != 0)
   {
-    iid = (IMAGE_IMPORT_DESCRIPTOR *) MapPointer (soffs, soffs_len,
-        idata->VirtualAddress, NULL);
+    iid = (IMAGE_IMPORT_DESCRIPTOR *) MapPointer (soffs, soffs_len, idata->VirtualAddress, NULL);
     if (iid)
       for (i = 0; iid[i].Characteristics || iid[i].TimeDateStamp ||
           iid[i].ForwarderChain || iid[i].Name || iid[i].FirstThunk; i++)
         ProcessDep (cfg, soffs, soffs_len, iid[i].Name, root, self, 1);
   }
 
-  idata = opt_header_get_dd_entry (opt_header, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT, cfg);
-  if (idata->Size > 0 && idata->VirtualAddress != 0)
+  idata = (IMAGE_DATA_DIRECTORY*)opt_header_get_dd_entry(opt_header, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT, cfg);
+  if (idata && idata->Size > 0 && idata->VirtualAddress != 0)
   {
     idd = (IMAGE_DELAYLOAD_DESCRIPTOR *) MapPointer (soffs, soffs_len, idata->VirtualAddress, NULL);
     if (idd)
@@ -440,25 +478,43 @@ int BuildDepTree (BuildTreeConfig* cfg, char *name, struct DepTreeElement *root,
   int soffs_len;
   soff_entry *soffs;
 
+  if (!cfg || !name || !root || !self)
+    return -1;
+
   if (self->flags & DEPTREE_PROCESSED)
   {
     return 0;
   }
 
+  memset(&loaded_image, 0, sizeof(LOADED_IMAGE));
+
   if (cfg->on_self)
   {
-    char modpath[MAX_PATH];
-    success = GetModuleHandleExA (GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, name, &hmod);
+    char modpath[MAX_PATH] = {0};
+    //success = GetModuleHandleExA (GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, name, &hmod);
+    hmod = GetModuleHandle(name);
+    success = !!hmod;
     if (!success)
       return 1;
     if (GetModuleFileNameA (hmod, modpath, MAX_PATH) == 0)
       return 1;
     if (self->resolved_module == NULL)
-      self->resolved_module = strdup (modpath);
+      self->resolved_module = _strdup (modpath);
 
     dos = (IMAGE_DOS_HEADER *) hmod;
-    loaded_image.FileHeader = (IMAGE_NT_HEADERS *) ((char *) hmod + dos->e_lfanew);
-    loaded_image.Sections = (IMAGE_SECTION_HEADER *) ((char *) hmod + dos->e_lfanew + sizeof (IMAGE_NT_HEADERS));
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
+      return 1;
+
+    loaded_image.FileHeader = (IMAGE_NT_HEADERS *)((BYTE *)hmod + dos->e_lfanew);
+    if (!loaded_image.FileHeader || loaded_image.FileHeader->Signature != IMAGE_NT_SIGNATURE)
+      return 1;
+
+    loaded_image.Sections = (IMAGE_SECTION_HEADER *)(
+        (BYTE *)loaded_image.FileHeader +
+        sizeof(DWORD) +
+        sizeof(IMAGE_FILE_HEADER) +
+        loaded_image.FileHeader->FileHeader.SizeOfOptionalHeader
+    );
     loaded_image.NumberOfSections = loaded_image.FileHeader->FileHeader.NumberOfSections;
     loaded_image.MappedAddress = (void *) hmod;
     if (cfg->machineType != -1 && (int)loaded_image.FileHeader->FileHeader.Machine != cfg->machineType)
@@ -467,10 +523,11 @@ int BuildDepTree (BuildTreeConfig* cfg, char *name, struct DepTreeElement *root,
   else
   {
     success = FALSE;
-    for (i = 0; i < cfg->searchPaths->count && !success; ++i)
-    {
-      success = TryMapAndLoad (name, cfg->searchPaths->path[i], &loaded_image, cfg->machineType);
-    }
+    if (cfg->searchPaths && cfg->searchPaths->path)
+      for (i = 0; i < cfg->searchPaths->count && !success; ++i)
+        if (cfg->searchPaths->path[i])
+          success = TryMapAndLoad(name, cfg->searchPaths->path[i], &loaded_image, cfg->machineType);
+
     if (!success)
         success = TryMapAndLoad (name, NULL, &loaded_image, cfg->machineType);
     if (!success)
@@ -478,14 +535,22 @@ int BuildDepTree (BuildTreeConfig* cfg, char *name, struct DepTreeElement *root,
       self->flags |= DEPTREE_UNRESOLVED;
       return 1;
     }
-    if (self->resolved_module == NULL)
-      self->resolved_module = strdup (loaded_image.ModuleName);
-  }
-  if (cfg->machineType == -1)
-    cfg->machineType = (int)loaded_image.FileHeader->FileHeader.Machine;
-  img = &loaded_image;
+    if (self->resolved_module == NULL && loaded_image.ModuleName)
 
-  PushStack (cfg->stack, cfg->stack_len, cfg->stack_size, name);
+        self->resolved_module = _strdup (loaded_image.ModuleName ? loaded_image.ModuleName : name);
+
+  }
+  if (cfg->machineType == -1 && loaded_image.FileHeader) {
+    IMAGE_OPTIONAL_HEADER32 *OptionalHeader = (
+        IMAGE_OPTIONAL_HEADER32 *)((BYTE *)loaded_image.FileHeader +
+        sizeof(IMAGE_FILE_HEADER) + sizeof(DWORD)
+    );
+    cfg->machineType = (int)loaded_image.FileHeader->FileHeader.Machine;
+    cfg->isPE32plus = OptionalHeader->Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+  }
+  img = &loaded_image;
+  if (cfg->stack && cfg->stack_len && cfg->stack_size)
+    PushStack (cfg->stack, cfg->stack_len, cfg->stack_size, name);
 
   self->mapped_address = loaded_image.MappedAddress;
 
@@ -493,21 +558,31 @@ int BuildDepTree (BuildTreeConfig* cfg, char *name, struct DepTreeElement *root,
 
   soffs_len = img->NumberOfSections;
   soffs = (soff_entry *) malloc (sizeof(soff_entry) * (soffs_len + 1));
+  if (!soffs) {
+    if (!cfg->on_self)
+      UnMapAndLoad(&loaded_image);
+    return -1;
+  }
+  memset(soffs, 0, sizeof(soff_entry) * (soffs_len + 1));
   for (i = 0; i < img->NumberOfSections; i++)
   {
     soffs[i].start = img->Sections[i].VirtualAddress;
-    soffs[i].end = soffs[i].start + img->Sections[i].Misc.VirtualSize;
+    soffs[i].end = soffs[i].start + (
+        img->Sections[i].Misc.VirtualSize ?
+        img->Sections[i].Misc.VirtualSize :
+        img->Sections[i].SizeOfRawData
+    );
     if (cfg->on_self)
       soffs[i].off = img->MappedAddress/* + img->Sections[i].VirtualAddress*/;
     else if (img->Sections[i].PointerToRawData != 0)
-      soffs[i].off = img->MappedAddress + img->Sections[i].PointerToRawData - 
+      soffs[i].off = img->MappedAddress + img->Sections[i].PointerToRawData -
           img->Sections[i].VirtualAddress;
     else
       soffs[i].off = NULL;
   }
   soffs[img->NumberOfSections].start = 0;
   soffs[img->NumberOfSections].end = 0;
-  soffs[img->NumberOfSections].off = 0;
+  soffs[img->NumberOfSections].off = NULL;
 
   BuildDepTree32or64 (img, cfg, root, self, soffs, soffs_len);
   free (soffs);
@@ -523,7 +598,7 @@ int BuildDepTree (BuildTreeConfig* cfg, char *name, struct DepTreeElement *root,
     {
       char *forward_str_copy = NULL, *export_name = NULL, *rdot = NULL;
       DWORD export_ordinal = 0;
-      forward_str_copy = strdup (self->exports[i]->forward_str);
+      forward_str_copy = _strdup (self->exports[i]->forward_str);
       rdot = strrchr (forward_str_copy, '.');
       if (rdot != NULL && rdot[1] != 0)
       {
@@ -564,6 +639,8 @@ int BuildDepTree (BuildTreeConfig* cfg, char *name, struct DepTreeElement *root,
    * processed modules, this should be more effective at preventing
    * us from processing modules multiple times
    */
-  /*PopStack (stack, stack_len, stack_size, name);*/
+  //if (cfg->stack && cfg->stack_len && cfg->stack_size && *cfg->stack_len > 0 && cfg->name)
+    //PopStack(cfg->stack, cfg->stack_len, cfg->stack_size, cfg->name);
+
   return 0;
 }

@@ -23,44 +23,51 @@ Code is mostly written after
 MSDN Magazine articles
 */
 
+#define _CRT_SECURE_NO_WARNINGS
+
 #include <windows.h>
-
 #include <imagehlp.h>
-
 #include <winnt.h>
-
 #include <string.h>
 #include <stdio.h>
 
 #include "libntldd.h"
 
+#ifdef _MSC_VER
+#define I64PF "I64"
+#else
+#define I64PF "ll"
+#endif
+
+static FILE *fp;
+
 void printversion()
 {
-  printf ("ntldd %d.%d\n\
-Copyright (C) 2010-2015 LRN\n\
-This is free software; see the source for conditions. There is NO\n\
-warranty; not event for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\
+  fprintf (fp,"ntldd %d.%d\r\n\
+Copyright (C) 2010-2015 LRN\r\n\
+This is free software; see the source for conditions. There is NO\r\n\
+warranty; not event for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\r\n\
 Written by LRN.", NTLDD_VERSION_MAJOR, NTLDD_VERSION_MINOR);
 }
 
 void printhelp(char *argv0)
 {
-  printf("Usage: %s [OPTION]... FILE...\n\
-OPTIONS:\n\
---version         Displays version\n\
--v, --verbose         Does not work\n\
--u, --unused          Does not work\n\
--d, --data-relocs     Does not work\n\
--r, --function-relocs Does not work\n\
--R, --recursive       Lists dependencies recursively,\n\
-                        eliminating duplicates\n\
--D, --search-dir      Additional search directory\n\
---list-exports        Lists exports of a module (single file only)\n\
---list-imports        Lists imports of modules\n\
---help                Displays this message\n\
-\n\
-Use -- option to pass filenames that start with `--' or `-'\n\
-For bug reporting instructions, please see:\n\
+  fprintf(fp,"Usage: %s [OPTION]... FILE...\r\n\
+OPTIONS:\r\n\
+--version         Displays version\r\n\
+-v, --verbose         Does not work\r\n\
+-u, --unused          Does not work\r\n\
+-d, --data-relocs     Does not work\r\n\
+-r, --function-relocs Does not work\r\n\
+-R, --recursive       Lists dependencies recursively,\r\n\
+                        eliminating duplicates\r\n\
+-D, --search-dir      Additional search directory\r\n\
+--list-exports        Lists exports of a module (single file only)\r\n\
+--list-imports        Lists imports of modules\r\n\
+--help                Displays this message\r\n\
+\r\n\
+Use -- option to pass filenames that start with `--' or `-'\r\n\
+For bug reporting instructions, please see:\r\n\
 <somewhere>.", argv0);
 }
 
@@ -76,7 +83,7 @@ int PrintImageLinks (int first, int verbose, int unused, int datarelocs, int fun
     {
       struct ExportTableItem *item = &self->exports[i];
 
-      printf ("%*s[%u] %s (0x%lx)%s%s <%d>\n", depth, depth > 0 ? " " : "", \
+      fprintf (fp,"%*s[%u] %s (0x%lx)%s%s <%d>\r\n", depth, depth > 0 ? " " : "", \
           item->ordinal, item->name, item->address_offset, \
           item->forward_str ? " ->" : "", \
           item->forward_str ? item->forward_str : "",
@@ -87,18 +94,18 @@ int PrintImageLinks (int first, int verbose, int unused, int datarelocs, int fun
   if (self->flags & DEPTREE_UNRESOLVED)  
   {
     if (!first)
-      printf (" => not found\n");
+      fprintf (fp," => not found\r\n");
     else
-      fprintf (stderr, "%s: not found\n", self->module);
+      fprintf (fp, "%s: not found\r\n", self->module);
     unresolved = 1;
   }
 
   if (!unresolved && !first)
   {
-    if (stricmp (self->module, self->resolved_module) == 0)
-      printf (" (0x%p)\n", self->mapped_address);
+    if (_stricmp (self->module, self->resolved_module) == 0)
+      fprintf (fp," (0x%p)\r\n", self->mapped_address);
     else
-      printf (" => %s (0x%p)\n", self->resolved_module,
+      fprintf (fp," => %s (0x%p)\r\n", self->resolved_module,
           self->mapped_address);
   }
 
@@ -108,11 +115,11 @@ int PrintImageLinks (int first, int verbose, int unused, int datarelocs, int fun
     {
       struct ImportTableItem *item = &self->imports[i];
 
-      printf ("\t%*s%llX %llX %3d %s %s %s\n", depth, depth > 0 ? " " : "", \
-          item->orig_address, item->address, item->ordinal, \
-          item->name ? item->name : "<NULL>",
-          item->mapped ? "" : "<UNRESOLVED>",
-          item->dll == NULL ? "<MODULE MISSING>" : item->dll->module ? item->dll->module : "<NULL>");
+      fprintf (fp,"\t%*s%" I64PF "X %" I64PF "X %3d %s%s %s\r\n", depth, depth > 0 ? " " : "",
+          item->orig_address, item->address, item->ordinal,
+          item->mapped ? "" : "<unresolved>",
+          item->dll == NULL ? "<not found: module missing>" : item->dll->module ? item->dll->module : "<NULL>",
+          item->name ? item->name : (item->ordinal != -1 ? "(imported by ordinal)" : "<NULL>"));
     }
   }
 
@@ -125,7 +132,7 @@ int PrintImageLinks (int first, int verbose, int unused, int datarelocs, int fun
     {
       if (!(self->childs[i]->flags & DEPTREE_VISITED))
       {
-        printf ("\t%*s%s", depth, depth > 0 ? " " : "", self->childs[i]->module);
+        fprintf (fp,"\t%*s%s", depth, depth > 0 ? " " : "", self->childs[i]->module);
         PrintImageLinks (0, verbose, unused, datarelocs, functionrelocs, self->childs[i], recursive, list_exports, list_imports, depth + 1);
       }
     }
@@ -148,10 +155,20 @@ int main (int argc, char **argv)
   int files_start = -1;
   int files_count = 0;
 
+  DWORD winver;
+  BOOL isWin32s;
+
   SearchPaths sp;
+  
+  /* Initialize fp at the beginning */
+  fp = stdout;
+  
   memset(&sp, 0, sizeof (sp));
   sp.path = calloc (1, sizeof (char*));
 
+  #pragma warning(suppress:4996)
+  winver = GetVersion();
+  isWin32s = ((winver > 0x80000000) && (LOBYTE(LOWORD(winver)) == 3));
   for (i = 1; i < argc; i++)
   {
     if (strcmp (argv[i], "--version") == 0)
@@ -177,10 +194,10 @@ int main (int argc, char **argv)
       list_imports = 1;
     else if ((strcmp (argv[i], "-D") == 0 || strcmp (argv[i], "--search-dir") == 0) && i < argc - 1)
     {
-      char* add_dirs = argv[i+1];
+      char *sep, *add_dirs = argv[i+1];
       if (*add_dirs == '"')
           add_dirs++;
-      char* sep = strchr(add_dirs, ';');
+      sep = strchr(add_dirs, ';');
       do {
         if (sep)
             *sep = '\0';
@@ -192,7 +209,7 @@ int main (int argc, char **argv)
           if (p)
             *p = '\0';
         }
-        sp.path[sp.count - 1] = strdup(add_dirs);
+        sp.path[sp.count - 1] = _strdup(add_dirs);
         add_dirs = sep + 1;
         if (!sep)
             break;
@@ -213,8 +230,8 @@ int main (int argc, char **argv)
     else if (strlen (argv[i]) > 1 && argv[i][0] == '-' && (argv[i][1] == '-' ||
         strlen (argv[i]) == 2) && !files)
     {
-      fprintf (stderr, "Unrecognized option `%s'\n\
-Try `ntldd --help' for more information\n", argv[i]);
+      fprintf (fp, "Unrecognized option `%s'\r\n\
+Try `ntldd --help' for more information\r\n", argv[i]);
       skip = 1;
       break;
     }
@@ -228,37 +245,40 @@ Try `ntldd --help' for more information\n", argv[i]);
 
   if (!skip && files_start > 0)
   {
+    int multiple;
+    struct DepTreeElement root;
     files_count = argc - files_start;
     sp.count += files_count;
     sp.path = realloc(sp.path, sp.count * sizeof(char*));
     for (i = 0; i < files_count; ++i)
     {
-      char buff[MAX_PATH] = {};
-      strcpy(buff, argv[files_start+i]);
-      char* p = strrchr(buff, '\\');
+      char *p, buff[MAX_PATH];
+      memset(buff, 0, MAX_PATH);
+      strcpy_s(buff, MAX_PATH, argv[files_start+i]);
+      p = strrchr(buff, '\\');
       if (!p)
         p = strrchr(buff, '/');
       if (p++)
         *p = '\0';
 
-      sp.path[sp.count - files_count + i] = strdup(buff);
+      sp.path[sp.count - files_count + i] = _strdup(buff);
     }
-    int multiple = files_start + 1 < argc;
-    struct DepTreeElement root;
+    multiple = files_start + 1 < argc;
     memset (&root, 0, sizeof (struct DepTreeElement));
     for (i = files_start; i < argc; i++)
     {
-      struct DepTreeElement *child = (struct DepTreeElement *) malloc (sizeof (struct DepTreeElement));
-      memset (child, 0, sizeof (struct DepTreeElement));
-      child->module = strdup (argv[i]);
-      AddDep (&root, child);
       char **stack = NULL;
       uint64_t stack_len = 0;
       uint64_t stack_size = 0;
       BuildTreeConfig cfg;
+      struct DepTreeElement *child = (struct DepTreeElement *) malloc (sizeof (struct DepTreeElement));
+      memset (child, 0, sizeof (struct DepTreeElement));
+      child->module = _strdup (argv[i]);
+      AddDep (&root, child);
       memset(&cfg, 0, sizeof(cfg));
       cfg.machineType = -1;
       cfg.on_self = 0;
+      cfg.isPE32plus = 0;
       cfg.datarelocs = datarelocs;
       cfg.recursive = recursive;
       cfg.functionrelocs = functionrelocs;
@@ -272,7 +292,7 @@ Try `ntldd --help' for more information\n", argv[i]);
     for (i = files_start; i < argc; i++)
     {
       if (multiple)
-        printf ("%s:\n", argv[i]);
+        fprintf (fp,"%s:\r\n", argv[i]);
       PrintImageLinks (1, verbose, unused, datarelocs, functionrelocs, root.childs[i - files_start], recursive, list_exports, list_imports, 0);
     }
   }
