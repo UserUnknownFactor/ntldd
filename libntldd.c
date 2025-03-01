@@ -468,179 +468,166 @@ BOOL TryMapAndLoad (PCSTR name, PCSTR path, PLOADED_IMAGE loadedImage, int requi
 
 int BuildDepTree (BuildTreeConfig* cfg, char *name, struct DepTreeElement *root, struct DepTreeElement *self)
 {
-  LOADED_IMAGE loaded_image;
-  LOADED_IMAGE *img;
-  IMAGE_DOS_HEADER *dos;
-  HMODULE hmod;
-  BOOL success;
+    LOADED_IMAGE loaded_image;
+    LOADED_IMAGE *img;
+    IMAGE_DOS_HEADER *dos;
+    HMODULE hmod;
+    BOOL success;
 
-  DWORD i, j;
-  int soffs_len;
-  soff_entry *soffs;
+    DWORD i, j;
+    int soffs_len;
+    soff_entry *soffs;
 
-  if (!cfg || !name || !root || !self)
-    return -1;
+    if (!cfg || !name || !root || !self)
+        return -1;
 
-  if (self->flags & DEPTREE_PROCESSED)
-  {
-    return 0;
-  }
-
-  memset(&loaded_image, 0, sizeof(LOADED_IMAGE));
-
-  if (cfg->on_self)
-  {
-    char modpath[MAX_PATH] = {0};
-    //success = GetModuleHandleExA (GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, name, &hmod);
-    hmod = GetModuleHandle(name);
-    success = !!hmod;
-    if (!success)
-      return 1;
-    if (GetModuleFileNameA (hmod, modpath, MAX_PATH) == 0)
-      return 1;
-    if (self->resolved_module == NULL)
-      self->resolved_module = _strdup (modpath);
-
-    dos = (IMAGE_DOS_HEADER *) hmod;
-    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
-      return 1;
-
-    loaded_image.FileHeader = (IMAGE_NT_HEADERS *)((BYTE *)hmod + dos->e_lfanew);
-    if (!loaded_image.FileHeader || loaded_image.FileHeader->Signature != IMAGE_NT_SIGNATURE)
-      return 1;
-
-    loaded_image.Sections = (IMAGE_SECTION_HEADER *)(
-        (BYTE *)loaded_image.FileHeader +
-        sizeof(DWORD) +
-        sizeof(IMAGE_FILE_HEADER) +
-        loaded_image.FileHeader->FileHeader.SizeOfOptionalHeader
-    );
-    loaded_image.NumberOfSections = loaded_image.FileHeader->FileHeader.NumberOfSections;
-    loaded_image.MappedAddress = (void *) hmod;
-    if (cfg->machineType != -1 && (int)loaded_image.FileHeader->FileHeader.Machine != cfg->machineType)
-        return 1;
-  }
-  else
-  {
-    success = FALSE;
-    if (cfg->searchPaths && cfg->searchPaths->path)
-      for (i = 0; i < cfg->searchPaths->count && !success; ++i)
-        if (cfg->searchPaths->path[i])
-          success = TryMapAndLoad(name, cfg->searchPaths->path[i], &loaded_image, cfg->machineType);
-
-    if (!success)
-        success = TryMapAndLoad (name, NULL, &loaded_image, cfg->machineType);
-    if (!success)
+    if (self->flags & DEPTREE_PROCESSED)
     {
-      self->flags |= DEPTREE_UNRESOLVED;
-      return 1;
+        return 0;
     }
-    if (self->resolved_module == NULL && loaded_image.ModuleName)
 
-        self->resolved_module = _strdup (loaded_image.ModuleName ? loaded_image.ModuleName : name);
+    memset(&loaded_image, 0, sizeof(LOADED_IMAGE));
 
-  }
-  if (cfg->machineType == -1 && loaded_image.FileHeader) {
-    IMAGE_OPTIONAL_HEADER32 *OptionalHeader = (
-        IMAGE_OPTIONAL_HEADER32 *)((BYTE *)loaded_image.FileHeader +
-        sizeof(IMAGE_FILE_HEADER) + sizeof(DWORD)
-    );
-    cfg->machineType = (int)loaded_image.FileHeader->FileHeader.Machine;
-    cfg->isPE32plus = OptionalHeader->Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
-  }
-  img = &loaded_image;
-  if (cfg->stack && cfg->stack_len && cfg->stack_size)
-    PushStack (cfg->stack, cfg->stack_len, cfg->stack_size, name);
-
-  self->mapped_address = loaded_image.MappedAddress;
-
-  self->flags |= DEPTREE_PROCESSED;
-
-  soffs_len = img->NumberOfSections;
-  soffs = (soff_entry *) malloc (sizeof(soff_entry) * (soffs_len + 1));
-  if (!soffs) {
-    if (!cfg->on_self)
-      UnMapAndLoad(&loaded_image);
-    return -1;
-  }
-  memset(soffs, 0, sizeof(soff_entry) * (soffs_len + 1));
-  for (i = 0; i < img->NumberOfSections; i++)
-  {
-    soffs[i].start = img->Sections[i].VirtualAddress;
-    soffs[i].end = soffs[i].start + (
-        img->Sections[i].Misc.VirtualSize ?
-        img->Sections[i].Misc.VirtualSize :
-        img->Sections[i].SizeOfRawData
-    );
     if (cfg->on_self)
-      soffs[i].off = img->MappedAddress/* + img->Sections[i].VirtualAddress*/;
-    else if (img->Sections[i].PointerToRawData != 0)
-      soffs[i].off = img->MappedAddress + img->Sections[i].PointerToRawData -
-          img->Sections[i].VirtualAddress;
+    {
+        char modpath[MAX_PATH] = {0};
+        //success = GetModuleHandleExA (GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, name, &hmod);
+        hmod = GetModuleHandle(name);
+        success = !!hmod;
+        if (!success)
+            return 1;
+        if (GetModuleFileNameA (hmod, modpath, MAX_PATH) == 0)
+            return 1;
+        if (self->resolved_module == NULL)
+            self->resolved_module = _strdup (modpath);
+
+        dos = (IMAGE_DOS_HEADER *) hmod;
+        if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
+            return 1;
+
+        loaded_image.FileHeader = (IMAGE_NT_HEADERS *)((BYTE *)hmod + dos->e_lfanew);
+        if (!loaded_image.FileHeader || loaded_image.FileHeader->Signature != IMAGE_NT_SIGNATURE)
+            return 1;
+
+        loaded_image.Sections = (IMAGE_SECTION_HEADER *)(
+            (BYTE *)loaded_image.FileHeader +
+            sizeof(DWORD) +
+            sizeof(IMAGE_FILE_HEADER) +
+            loaded_image.FileHeader->FileHeader.SizeOfOptionalHeader
+        );
+        loaded_image.NumberOfSections = loaded_image.FileHeader->FileHeader.NumberOfSections;
+        loaded_image.MappedAddress = (void *) hmod;
+        if (cfg->machineType != -1 && (int)loaded_image.FileHeader->FileHeader.Machine != cfg->machineType)
+            return 1;
+    }
     else
-      soffs[i].off = NULL;
-  }
-  soffs[img->NumberOfSections].start = 0;
-  soffs[img->NumberOfSections].end = 0;
-  soffs[img->NumberOfSections].off = NULL;
-
-  BuildDepTree32or64 (img, cfg, root, self, soffs, soffs_len);
-  free (soffs);
-
-  if (!cfg->on_self)
-    UnMapAndLoad (&loaded_image);
-
-  /* Not sure if a forwarded export warrants an import. If it doesn't, then the dll to which the export is forwarded will NOT
-   * be among the dependencies of this dll and it will be necessary to do yet another ProcessDep...
-  for (i = 0; i < self->exports_len; i++)
-  {
-    if (self->exports[i]->forward_str != NULL && self-.exports[i]->forward == NULL)
-    {
-      char *forward_str_copy = NULL, *export_name = NULL, *rdot = NULL;
-      DWORD export_ordinal = 0;
-      forward_str_copy = _strdup (self->exports[i]->forward_str);
-      rdot = strrchr (forward_str_copy, '.');
-      if (rdot != NULL && rdot[1] != 0)
-      {
-        rdot[0] = 0;
-        export_name = &rdot[1];
-        if (export_name[0] == '#' && export_name[1] >= '0' && export_name[1] <= '9')
+    {        
+        success = FALSE;
+        BOOL isLocalDll = FALSE;
+        
+        // First try to find in provided search paths
+        if (cfg->searchPaths && cfg->searchPaths->path)
         {
-          export_ordinal = strtol (&export_name[1], NULL, 10);
-          export_name = NULL;
+            for (i = 0; i < cfg->searchPaths->count && !success; ++i)
+            {
+                if (cfg->searchPaths->path[i])
+                {
+                    success = TryMapAndLoad(name, cfg->searchPaths->path[i], &loaded_image, cfg->machineType);
+                    if (success)
+                        isLocalDll = TRUE;
+                }
+            }
         }
-        self->exports[i]->forward = FindExportForward (forward_str_copy, export_name, export_ordinal);
-      }
-      free (forward_str_copy);
-    }
-  }
-  */
-  for (i = 0; i < self->imports_len; i++)
-  {
-    if (self->imports[i].mapped == NULL && self->imports[i].dll != NULL && (self->imports[i].name != NULL || self->imports[i].ordinal > 0))
-    {
-      struct DepTreeElement *dll = self->imports[i].dll;
-      for (j = 0; j < dll->exports_len; j++)
-      {
-        if ((self->imports[i].name != NULL && dll->exports[j].name != NULL && strcmp (self->imports[i].name, dll->exports[j].name) == 0) ||
-            (self->imports[i].ordinal > 0 && dll->exports[j].ordinal > 0 && self->imports[i].ordinal == dll->exports[j].ordinal))
+        
+        // If not found locally and local_only is set, try system paths but mark as system
+        if (!success && cfg->local_only)
         {
-          self->imports[i].mapped = &dll->exports[j];
-          break;
+            success = TryMapAndLoad(name, NULL, &loaded_image, cfg->machineType);
+            if (success)
+                self->flags |= DEPTREE_SYSTEM;
         }
-      }
-/*
-      if (self->imports[i].mapped == NULL)
-        printf ("Could not match %s (%d) in %s to %s\n", self->imports[i].name, self->imports[i].ordinal, self->module, dll->module);
-*/
-    }
-  }
-  /* By keeping items in the stack we turn it into a list of all
-   * processed modules, this should be more effective at preventing
-   * us from processing modules multiple times
-   */
-  //if (cfg->stack && cfg->stack_len && cfg->stack_size && *cfg->stack_len > 0 && cfg->name)
-    //PopStack(cfg->stack, cfg->stack_len, cfg->stack_size, cfg->name);
+        // If not local_only, just try system paths normally
+        else if (!success && !cfg->local_only)
+            success = TryMapAndLoad(name, NULL, &loaded_image, cfg->machineType);
 
-  return 0;
+        
+        if (!success)
+        {
+            self->flags |= DEPTREE_UNRESOLVED;
+            return 1;
+        }
+        
+        if (self->resolved_module == NULL && loaded_image.ModuleName)
+            self->resolved_module = _strdup(loaded_image.ModuleName ? loaded_image.ModuleName : name);
+    }
+    
+    if (cfg->machineType == -1 && loaded_image.FileHeader) {
+        IMAGE_OPTIONAL_HEADER32 *OptionalHeader = (
+            IMAGE_OPTIONAL_HEADER32 *)((BYTE *)loaded_image.FileHeader +
+            sizeof(IMAGE_FILE_HEADER) + sizeof(DWORD)
+        );
+        cfg->machineType = (int)loaded_image.FileHeader->FileHeader.Machine;
+        cfg->isPE32plus = OptionalHeader->Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+    }
+    
+    img = &loaded_image;
+    if (cfg->stack && cfg->stack_len && cfg->stack_size)
+        PushStack(cfg->stack, cfg->stack_len, cfg->stack_size, name);
+
+    self->mapped_address = loaded_image.MappedAddress;
+
+    self->flags |= DEPTREE_PROCESSED;
+
+    soffs_len = img->NumberOfSections;
+    soffs = (soff_entry *) malloc(sizeof(soff_entry) * (soffs_len + 1));
+    if (!soffs) {
+        if (!cfg->on_self)
+            UnMapAndLoad(&loaded_image);
+        return -1;
+    }
+    
+    memset(soffs, 0, sizeof(soff_entry) * (soffs_len + 1));
+    for (i = 0; i < img->NumberOfSections; i++)
+    {
+        soffs[i].start = img->Sections[i].VirtualAddress;
+        soffs[i].end = soffs[i].start + (
+            img->Sections[i].Misc.VirtualSize ?
+            img->Sections[i].Misc.VirtualSize :
+            img->Sections[i].SizeOfRawData
+        );
+        if (cfg->on_self)
+            soffs[i].off = img->MappedAddress/* + img->Sections[i].VirtualAddress*/;
+        else if (img->Sections[i].PointerToRawData != 0)
+            soffs[i].off = img->MappedAddress + img->Sections[i].PointerToRawData -
+                img->Sections[i].VirtualAddress;
+        else
+            soffs[i].off = NULL;
+    }
+    soffs[img->NumberOfSections].start = 0;
+    soffs[img->NumberOfSections].end = 0;
+    soffs[img->NumberOfSections].off = NULL;
+
+    BuildDepTree32or64(img, cfg, root, self, soffs, soffs_len);
+    free(soffs);
+
+    if (!cfg->on_self)
+        UnMapAndLoad(&loaded_image);
+
+    for (i = 0; i < self->imports_len; i++)
+    {
+        if (self->imports[i].mapped == NULL && self->imports[i].dll != NULL && (self->imports[i].name != NULL || self->imports[i].ordinal > 0))
+        {
+            struct DepTreeElement *dll = self->imports[i].dll;
+            for (j = 0; j < dll->exports_len; j++)
+            {
+                if ((self->imports[i].name != NULL && dll->exports[j].name != NULL && strcmp(self->imports[i].name, dll->exports[j].name) == 0) ||
+                    (self->imports[i].ordinal > 0 && dll->exports[j].ordinal > 0 && self->imports[i].ordinal == dll->exports[j].ordinal))
+                {
+                    self->imports[i].mapped = &dll->exports[j];
+                    break;
+                }
+            }
+        }
+    }
+    return 0;
 }

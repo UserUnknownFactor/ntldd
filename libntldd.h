@@ -9,6 +9,8 @@ typedef __int64 int64_t;
 #endif
 #include <windows.h>
 
+#define DEPTREE_SYSTEM     0x00000008
+
 #if defined(_MSC_VER) && _MSC_VER < 1300
 typedef struct _IMAGE_DELAYLOAD_DESCRIPTOR
 {
@@ -203,6 +205,7 @@ typedef struct BuildTreeConfig_t
     int datarelocs;
     int functionrelocs;
     int recursive;
+    int local_only;
     int on_self;
     char ***stack;
     uint64_t *stack_len;
