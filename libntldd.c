@@ -322,7 +322,8 @@ static void BuildDepTree32or64 (LOADED_IMAGE *img, BuildTreeConfig* cfg, struct 
             }
             else
               self->exports[i].address = MapPointer (soffs, soffs_len, addrs[i], &section);
-              self->exports[i].ordinal = (WORD)(i + ied->Base);
+
+            self->exports[i].ordinal = (WORD)(i + ied->Base);
             self->exports[i].section_index = section_index;
             self->exports[i].address_offset = addrs[i];
           }

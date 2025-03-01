@@ -14,5 +14,3 @@ Cons:
  * May not work on Windows CE or in relatively unusual environments;  
  * Does not have the advanced features of ldd (most options do not work);  
  * Does not fully mimic ldd.  
-
-Run `build_msvc.cmd` to compile. Requires MS Visual Studio 2022+ with VSINSTALLDIR environment variable set to it's installation folder.
