@@ -1,0 +1,60 @@
+name: Build and Release ntldd
+
+on:
+  push:
+    tags:
+      - '*.*'
+
+env:
+  PACKAGE_PREFIX: ntldd
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
+      - name: Build ntldd
+        shell: cmd
+        run: |
+          cl.exe /nologo /c /O2 /GL /W4 /D_WIN32_WINNT=0x0501 libntldd.c /Fo:libntldd.obj
+          lib.exe /NOLOGO libntldd.obj /OUT:ntldd.lib
+          cl.exe /nologo /c /O2 /GL /W4 ntldd.c /Fo:ntldd.obj
+          link.exe /NOLOGO /LTCG /SUBSYSTEM:CONSOLE ntldd.obj ntldd.lib imagehlp.lib /OUT:ntldd.exe
+
+      - name: Create ZIP archive
+        shell: pwsh
+        run: |
+          $VERSION = if ($env:GITHUB_REF -match '^refs/tags/(.+)') { $matches[1] } else { 'dev' }
+          echo "VERSION=$VERSION" >> $env:GITHUB_ENV
+
+          $ZIP_NAME = "${{ env.PACKAGE_PREFIX }}_x86-$VERSION.zip"
+          7z a "$ZIP_NAME" ntldd.exe
+          echo "UPLOAD_FILE=$ZIP_NAME" >> $env:GITHUB_ENV
+          
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        #if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        with:
+          name: ${{ env.PACKAGE_PREFIX }} ${{ env.VERSION }}
+          files: ${{ env.UPLOAD_FILE }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          
+      - name: Upload artifact for manual workflow
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntldd-build
+          path: ${{ env.UPLOAD_FILE }}
